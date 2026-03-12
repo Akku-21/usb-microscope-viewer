@@ -597,12 +597,10 @@
                 }) || glCanvas.getContext('experimental-webgl');
                 
                 if (!gl) {
-                    console.log('WebGL not available, falling back to 2D canvas');
                     useWebGL = false;
                     return false;
                 }
                 
-                console.log('WebGL context created successfully');
 
                 const vertexShaderSource = `
                     attribute vec2 a_position;
@@ -715,10 +713,8 @@
                 };
 
                 useWebGL = true;
-                console.log('WebGL initialized successfully');
                 return true;
             } catch (e) {
-                console.error('WebGL init failed:', e);
                 useWebGL = false;
                 return false;
             }
@@ -729,7 +725,6 @@
             gl.shaderSource(shader, source);
             gl.compileShader(shader);
             if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-                console.error('Shader compile error:', gl.getShaderInfoLog(shader));
                 gl.deleteShader(shader);
                 return null;
             }
@@ -868,7 +863,6 @@
             gl.linkProgram(glProgram);
             
             if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
-                console.error('Program link error:', gl.getProgramInfoLog(glProgram));
                 return false;
             }
             
@@ -953,10 +947,8 @@
         function setUpscaleFactor() {
             upscaleFactor = parseInt(document.getElementById('upscaleSelect').value);
             if (upscaleFactor > 1 && !useWebGL) {
-                console.log('Initializing WebGL for upscaling...');
                 initWebGL();
                 if (useWebGL) {
-                    console.log('WebGL initialized, setting up program...');
                     setupWebGLProgram(interpolationMode);
                     // Create texture if not exists
                     if (!glTexture) {
@@ -970,13 +962,11 @@
                     imageCanvas = document.createElement('canvas');
                     imageCtx = imageCanvas.getContext('2d');
                 } else {
-                    console.warn('WebGL not available, using canvas fallback');
                 }
             }
             const displayText = `${video.videoWidth || 0}x${video.videoHeight || 0}` + 
                 (upscaleFactor > 1 ? ` → ${(video.videoWidth || 0) * upscaleFactor}x${(video.videoHeight || 0) * upscaleFactor}` : '');
             resolutionEl.textContent = displayText;
-            console.log('Resolution:', displayText, 'WebGL:', useWebGL, 'Upscale:', upscaleFactor);
         }
 
         function setInterpolationMode() {
@@ -1016,7 +1006,6 @@
                 
                 const timeSinceLastFrame = Date.now() - lastFrameTime;
                 if (timeSinceLastFrame > FREEZE_THRESHOLD_MS && !isFrozen) {
-                    console.log('Freeze detected! Time since last frame:', timeSinceLastFrame);
                     setFrozen(true);
                     autoReconnect();
                 }
@@ -1088,9 +1077,7 @@
                 await startCameraInternal();
                 setFrozen(false);
                 setReconnecting(false);
-                console.log('Reconnection successful!');
             } catch (err) {
-                console.error('Reconnection failed:', err);
                 setReconnecting(false);
             }
         }
@@ -1136,16 +1123,13 @@
                 const videoTrack = stream.getVideoTracks()[0];
                 if (videoTrack) {
                     videoTrack.onmute = () => {
-                        console.log('Video track muted (frozen)');
                         setFrozen(true);
                         autoReconnect();
                     };
                     videoTrack.onunmute = () => {
-                        console.log('Video track unmuted (resumed)');
                         setFrozen(false);
                     };
                     videoTrack.onended = () => {
-                        console.log('Video track ended');
                         setFrozen(true);
                         autoReconnect();
                     };
@@ -1185,7 +1169,6 @@
                 }
                 
             } catch (err) {
-                console.error('Camera error:', err);
                 statusEl.textContent = 'Error: ' + err.message;
                 throw err;
             }
@@ -1317,7 +1300,6 @@
                         imageCanvas.width = procCanvas.width;
                         imageCanvas.height = procCanvas.height;
                         imageCtx.putImageData(imageData, 0, 0);
-                        console.log('Rendering WebGL upscale:', procCanvas.width + 'x' + procCanvas.height, '→', (procCanvas.width * upscaleFactor) + 'x' + (procCanvas.height * upscaleFactor));
                         const success = renderWebGL(imageCanvas);
                         
                         if (success) {
@@ -1354,7 +1336,6 @@
                         canvas.style.maxWidth = 'none';
                         canvas.style.maxHeight = 'none';
                         
-                        console.log('Canvas 2D upscale:', procCanvas.width + 'x' + procCanvas.height, '→', targetWidth + 'x' + targetHeight);
                     }
                 } else {
                     // Native resolution (1x)
