@@ -926,15 +926,21 @@
         function setUpscaleFactor() {
             upscaleFactor = parseInt(document.getElementById('upscaleSelect').value);
             if (upscaleFactor > 1 && !useWebGL) {
+                console.log('Initializing WebGL for upscaling...');
                 initWebGL();
                 if (useWebGL) {
+                    console.log('WebGL initialized, setting up program...');
                     setupWebGLProgram(interpolationMode);
                     imageCanvas = document.createElement('canvas');
                     imageCtx = imageCanvas.getContext('2d');
+                } else {
+                    console.warn('WebGL not available, using canvas fallback');
                 }
             }
-            resolutionEl.textContent = `${video.videoWidth || 0}x${video.videoHeight || 0}` + 
+            const displayText = `${video.videoWidth || 0}x${video.videoHeight || 0}` + 
                 (upscaleFactor > 1 ? ` → ${(video.videoWidth || 0) * upscaleFactor}x${(video.videoHeight || 0) * upscaleFactor}` : '');
+            resolutionEl.textContent = displayText;
+            console.log('Resolution:', displayText, 'WebGL:', useWebGL, 'Upscale:', upscaleFactor);
         }
 
         function setInterpolationMode() {
@@ -1273,14 +1279,31 @@
                     imageCanvas.width = procCanvas.width;
                     imageCanvas.height = procCanvas.height;
                     imageCtx.putImageData(imageData, 0, 0);
-                    renderWebGL(imageCanvas);
+                    console.log('Rendering WebGL upscale:', procCanvas.width + 'x' + procCanvas.height, '→', (procCanvas.width * upscaleFactor) + 'x' + (procCanvas.height * upscaleFactor));
+                    const success = renderWebGL(imageCanvas);
+                    
+                    if (success) {
+                        // Apply zoom/pan via CSS transform on the canvas element
+                        canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+                        canvas.style.transformOrigin = 'center center';
+                        // Reset max-width/height to allow upscaled display
+                        canvas.style.maxWidth = 'none';
+                        canvas.style.maxHeight = 'none';
+                    }
                 } else {
+                    // Reset canvas size to source resolution
+                    if (canvas.width !== procCanvas.width || canvas.height !== procCanvas.height) {
+                        canvas.width = procCanvas.width;
+                        canvas.height = procCanvas.height;
+                    }
+                    // Reset CSS transforms
+                    canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+                    canvas.style.transformOrigin = 'center center';
+                    canvas.style.maxWidth = '100%';
+                    canvas.style.maxHeight = '100%';
+                    
                     ctx.fillStyle = '#000';
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    
-                    ctx.save();
-                    ctx.translate(offsetX, offsetY);
-                    ctx.scale(scale, scale);
                     
                     const tempCanvas = document.createElement('canvas');
                     tempCanvas.width = imageData.width;
@@ -1288,7 +1311,6 @@
                     tempCanvas.getContext('2d').putImageData(imageData, 0, 0);
                     
                     ctx.drawImage(tempCanvas, 0, 0);
-                    ctx.restore();
                 }
             }
             
