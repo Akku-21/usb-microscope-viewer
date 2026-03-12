@@ -896,6 +896,16 @@
         function renderWebGL(sourceCanvas) {
             if (!gl || !glProgram) return false;
 
+            // Create texture if not exists
+            if (!glTexture) {
+                glTexture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, glTexture);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            }
+
             const width = sourceCanvas.width * upscaleFactor;
             const height = sourceCanvas.height * upscaleFactor;
 
@@ -946,6 +956,15 @@
                 if (useWebGL) {
                     console.log('WebGL initialized, setting up program...');
                     setupWebGLProgram(interpolationMode);
+                    // Create texture if not exists
+                    if (!glTexture) {
+                        glTexture = gl.createTexture();
+                        gl.bindTexture(gl.TEXTURE_2D, glTexture);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    }
                     imageCanvas = document.createElement('canvas');
                     imageCtx = imageCanvas.getContext('2d');
                 } else {
