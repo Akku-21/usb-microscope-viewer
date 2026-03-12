@@ -99,29 +99,18 @@
             padding: 8px 12px;
             font-size: 12px;
         }
-        .resolution-controls {
+        .upscale-controls {
             display: flex;
             gap: 8px;
             align-items: center;
         }
-        .resolution-controls select {
+        .upscale-controls select {
             background: #3a3a3a;
             color: #fff;
             border: 1px solid #555;
             padding: 8px 12px;
             border-radius: 4px;
             font-size: 13px;
-        }
-        .upscale-toggle {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            color: #aaa;
-            font-size: 12px;
-            cursor: pointer;
-        }
-        .upscale-toggle input[type="checkbox"] {
-            cursor: pointer;
         }
         .filter-controls {
             display: flex;
@@ -289,7 +278,6 @@
             border-radius: 3px;
             color: #fff;
         }
-        /* Modal dialog styles */
         .modal {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
@@ -359,17 +347,18 @@
             <button class="secondary" onclick="deleteProfile()">🗑️ Del</button>
         </div>
         
-        <div class="resolution-controls">
-            <select id="resolutionSelect" onchange="changeResolution()">
-                <option value="native">Native (Camera Max)</option>
-                <option value="1920x1080">1920×1080 (1080p)</option>
-                <option value="1280x720">1280×720 (720p)</option>
-                <option value="640x480">640×480 (VGA)</option>
+        <div class="upscale-controls">
+            <select id="upscaleSelect" onchange="setUpscaleFactor()">
+                <option value="1">Native (1×)</option>
+                <option value="2">Upscale 2×</option>
+                <option value="3">Upscale 3×</option>
+                <option value="4">Upscale 4×</option>
             </select>
-            <label class="upscale-toggle">
-                <input type="checkbox" id="upscaleCheck" onchange="toggleUpscale()">
-                <span>Upscale 2×</span>
-            </label>
+            <select id="interpSelect" onchange="setInterpolationMode()">
+                <option value="linear">Linear</option>
+                <option value="bicubic">Bicubic</option>
+                <option value="lanczos">Lanczos</option>
+            </select>
         </div>
         
         <div class="zoom-controls">
@@ -424,9 +413,8 @@
     </div>
 
     <div class="help">
-        <kbd>Scroll</kbd> Zoom | <kbd>Drag</kbd> Pan | <kbd>Space</kbd> Quick Save | <kbd>Shift+Space</kbd> Named Save | <kbd>1-5</kbd> Filters | Resolution + Upscale controls in toolbar
+        <kbd>Scroll</kbd> Zoom | <kbd>Drag</kbd> Pan | <kbd>Space</kbd> Quick Save | <kbd>Shift+Space</kbd> Named Save | <kbd>1-5</kbd> Filters
     </div>
-
 
     <div class="modal" id="profileModal">
         <div class="modal-content">
@@ -455,7 +443,6 @@
         let stream = null;
         let animationId = null;
         
-        // View state
         let scale = 1;
         let offsetX = 0;
         let offsetY = 0;
@@ -464,7 +451,6 @@
         let lastY = 0;
         let snapshots = [];
 
-        // Filter state
         let filters = {
             sharpen: false,
             edge: false,
@@ -476,13 +462,18 @@
             saturation: 0
         };
 
-        // Offscreen canvas for processing
         let procCanvas = document.createElement('canvas');
         let procCtx = procCanvas.getContext('2d');
 
-        // Resolution and upscaling state
-        let targetResolution = { width: 1920, height: 1080 };
         let upscaleFactor = 1;
+        let interpolationMode = 'linear';
+        let useWebGL = false;
+        let gl = null;
+        let glProgram = null;
+        let glTexture = null;
+        let glBuffer = null;
+        let imageCanvas = null;
+        let imageCtx = null;
 
         // FREEZE DETECTION STATE
         let isFrozen = false;
@@ -580,13 +571,11 @@
         }
         
         function applyFilterUI() {
-            // Update button states
             ['sharpen', 'edge', 'invert', 'solder', 'mono'].forEach(filter => {
                 const btn = document.getElementById('btn' + filter.charAt(0).toUpperCase() + filter.slice(1));
                 if (btn) btn.classList.toggle('active', filters[filter]);
             });
             
-            // Update sliders
             document.getElementById('contrastSlider').value = filters.contrast;
             document.getElementById('contrastVal').textContent = filters.contrast;
             document.getElementById('brightnessSlider').value = filters.brightness;
@@ -595,7 +584,367 @@
             document.getElementById('saturationVal').textContent = filters.saturation;
         }
 
-        // Frame monitoring with requestVideoFrameCallback (Chrome/Edge)
+        // WEBGL UPSCALING SETUP
+        function initWebGL() {
+            try {
+                gl = canvas.getContext('webgl', { 
+                    antialias: true,
+                    preserveDrawingBuffer: true 
+                }) || canvas.getContext('experimental-webgl');
+                
+                if (!gl) {
+                    console.log('WebGL not available, falling back to 2D canvas');
+                    useWebGL = false;
+                    return false;
+                }
+
+                const vertexShaderSource = `
+                    attribute vec2 a_position;
+                    attribute vec2 a_texCoord;
+                    varying vec2 v_texCoord;
+                    void main() {
+                        gl_Position = vec4(a_position, 0.0, 1.0);
+                        v_texCoord = a_texCoord;
+                    }
+                `;
+
+                const fragmentShaderSource = {
+                    linear: `
+                        precision mediump float;
+                        varying vec2 v_texCoord;
+                        uniform sampler2D u_texture;
+                        void main() {
+                            gl_FragColor = texture2D(u_texture, v_texCoord);
+                        }
+                    `,
+                    bicubic: `
+                        precision mediump float;
+                        varying vec2 v_texCoord;
+                        uniform sampler2D u_texture;
+                        uniform vec2 u_textureSize;
+                        
+                        vec4 cubic(float v) {
+                            vec4 n = vec4(1.0, 2.0, 3.0, 4.0) - v;
+                            vec4 s = n * n * n;
+                            float x = s.x;
+                            float y = s.y - 4.0 * s.x;
+                            float z = s.z - 4.0 * s.y + 6.0 * s.x;
+                            float w = 6.0 - x - y - z;
+                            return vec4(x, y, z, w) * (1.0/6.0);
+                        }
+                        
+                        void main() {
+                            vec2 texSize = u_textureSize;
+                            vec2 invTexSize = 1.0 / texSize;
+                            vec2 texPos = v_texCoord * texSize - 0.5;
+                            vec2 fxy = fract(texPos);
+                            texPos -= fxy;
+                            
+                            vec4 xcubic = cubic(fxy.x);
+                            vec4 ycubic = cubic(fxy.y);
+                            
+                            vec4 c = texPos.xxyy + vec2(-0.5, 1.5).xyxy;
+                            vec4 s = vec4(xcubic.xz + xcubic.yw, ycubic.xz + ycubic.yw);
+                            vec4 offset = c + vec4(xcubic.yw, ycubic.yw) / s;
+                            
+                            offset *= invTexSize.xxyy;
+                            
+                            vec4 sample0 = texture2D(u_texture, offset.xz);
+                            vec4 sample1 = texture2D(u_texture, offset.yz);
+                            vec4 sample2 = texture2D(u_texture, offset.xw);
+                            vec4 sample3 = texture2D(u_texture, offset.yw);
+                            
+                            float sx = s.x / (s.x + s.y);
+                            float sy = s.z / (s.z + s.w);
+                            
+                            gl_FragColor = mix(
+                                mix(sample3, sample2, sx),
+                                mix(sample1, sample0, sx),
+                                sy
+                            );
+                        }
+                    `,
+                    lanczos: `
+                        precision mediump float;
+                        varying vec2 v_texCoord;
+                        uniform sampler2D u_texture;
+                        uniform vec2 u_textureSize;
+                        
+                        float lanczos(float x, float a) {
+                            if (abs(x) < 0.0001) return 1.0;
+                            if (abs(x) >= a) return 0.0;
+                            float pi_x = 3.14159265359 * x;
+                            float a_x = x / a;
+                            return a * sin(pi_x) * sin(pi_x * a_x) / (pi_x * pi_x);
+                        }
+                        
+                        void main() {
+                            vec2 texSize = u_textureSize;
+                            vec2 invTexSize = 1.0 / texSize;
+                            vec2 texPos = v_texCoord * texSize;
+                            vec2 center = floor(texPos - 0.5) + 0.5;
+                            vec2 f = texPos - center;
+                            
+                            vec4 color = vec4(0.0);
+                            float weightSum = 0.0;
+                            
+                            for (int y = -3; y <= 3; y++) {
+                                for (int x = -3; x <= 3; x++) {
+                                    vec2 samplePos = center + vec2(float(x), float(y));
+                                    vec2 clampedPos = clamp(samplePos, vec2(0.0), texSize - 1.0);
+                                    vec2 texCoord = clampedPos * invTexSize;
+                                    
+                                    float wx = lanczos(float(x) - f.x, 3.0);
+                                    float wy = lanczos(float(y) - f.y, 3.0);
+                                    float weight = wx * wy;
+                                    
+                                    color += texture2D(u_texture, texCoord) * weight;
+                                    weightSum += weight;
+                                }
+                            }
+                            
+                            gl_FragColor = color / weightSum;
+                        }
+                    `
+                };
+
+                useWebGL = true;
+                console.log('WebGL initialized successfully');
+                return true;
+            } catch (e) {
+                console.error('WebGL init failed:', e);
+                useWebGL = false;
+                return false;
+            }
+        }
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        function setupWebGLProgram(mode) {
+            if (!gl) return false;
+            
+            const fragmentSources = {
+                linear: `
+                    precision mediump float;
+                    varying vec2 v_texCoord;
+                    uniform sampler2D u_texture;
+                    void main() {
+                        gl_FragColor = texture2D(u_texture, v_texCoord);
+                    }
+                `,
+                bicubic: `
+                    precision mediump float;
+                    varying vec2 v_texCoord;
+                    uniform sampler2D u_texture;
+                    uniform vec2 u_textureSize;
+                    
+                    vec4 cubic(float v) {
+                        vec4 n = vec4(1.0, 2.0, 3.0, 4.0) - v;
+                        vec4 s = n * n * n;
+                        float x = s.x;
+                        float y = s.y - 4.0 * s.x;
+                        float z = s.z - 4.0 * s.y + 6.0 * s.x;
+                        float w = 6.0 - x - y - z;
+                        return vec4(x, y, z, w) * (1.0/6.0);
+                    }
+                    
+                    void main() {
+                        vec2 texSize = u_textureSize;
+                        vec2 invTexSize = 1.0 / texSize;
+                        vec2 texPos = v_texCoord * texSize - 0.5;
+                        vec2 fxy = fract(texPos);
+                        texPos -= fxy;
+                        
+                        vec4 xcubic = cubic(fxy.x);
+                        vec4 ycubic = cubic(fxy.y);
+                        
+                        vec4 c = texPos.xxyy + vec2(-0.5, 1.5).xyxy;
+                        vec4 s = vec4(xcubic.xz + xcubic.yw, ycubic.xz + ycubic.yw);
+                        vec4 offset = c + vec4(xcubic.yw, ycubic.yw) / s;
+                        
+                        offset *= invTexSize.xxyy;
+                        
+                        vec4 sample0 = texture2D(u_texture, offset.xz);
+                        vec4 sample1 = texture2D(u_texture, offset.yz);
+                        vec4 sample2 = texture2D(u_texture, offset.xw);
+                        vec4 sample3 = texture2D(u_texture, offset.yw);
+                        
+                        float sx = s.x / (s.x + s.y);
+                        float sy = s.z / (s.z + s.w);
+                        
+                        gl_FragColor = mix(
+                            mix(sample3, sample2, sx),
+                            mix(sample1, sample0, sx),
+                            sy
+                        );
+                    }
+                `,
+                lanczos: `
+                    precision mediump float;
+                    varying vec2 v_texCoord;
+                    uniform sampler2D u_texture;
+                    uniform vec2 u_textureSize;
+                    
+                    float lanczos(float x, float a) {
+                        if (abs(x) < 0.0001) return 1.0;
+                        if (abs(x) >= a) return 0.0;
+                        float pi_x = 3.14159265359 * x;
+                        float a_x = x / a;
+                        return a * sin(pi_x) * sin(pi_x * a_x) / (pi_x * pi_x);
+                    }
+                    
+                    void main() {
+                        vec2 texSize = u_textureSize;
+                        vec2 invTexSize = 1.0 / texSize;
+                        vec2 texPos = v_texCoord * texSize;
+                        vec2 center = floor(texPos - 0.5) + 0.5;
+                        vec2 f = texPos - center;
+                        
+                        vec4 color = vec4(0.0);
+                        float weightSum = 0.0;
+                        
+                        for (int y = -3; y <= 3; y++) {
+                            for (int x = -3; x <= 3; x++) {
+                                vec2 samplePos = center + vec2(float(x), float(y));
+                                vec2 clampedPos = clamp(samplePos, vec2(0.0), texSize - 1.0);
+                                vec2 texCoord = clampedPos * invTexSize;
+                                
+                                float wx = lanczos(float(x) - f.x, 3.0);
+                                float wy = lanczos(float(y) - f.y, 3.0);
+                                float weight = wx * wy;
+                                
+                                color += texture2D(u_texture, texCoord) * weight;
+                                weightSum += weight;
+                            }
+                        }
+                        
+                        gl_FragColor = color / weightSum;
+                    }
+                `
+            };
+
+            const vertexSource = `
+                attribute vec2 a_position;
+                attribute vec2 a_texCoord;
+                varying vec2 v_texCoord;
+                void main() {
+                    gl_Position = vec4(a_position, 0.0, 1.0);
+                    v_texCoord = a_texCoord;
+                }
+            `;
+
+            const fragmentSource = fragmentSources[mode] || fragmentSources.linear;
+            
+            const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexSource);
+            const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+            
+            if (!vertexShader || !fragmentShader) return false;
+            
+            if (glProgram) {
+                gl.deleteProgram(glProgram);
+            }
+            
+            glProgram = gl.createProgram();
+            gl.attachShader(glProgram, vertexShader);
+            gl.attachShader(glProgram, fragmentShader);
+            gl.linkProgram(glProgram);
+            
+            if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
+                console.error('Program link error:', gl.getProgramInfoLog(glProgram));
+                return false;
+            }
+            
+            const positions = new Float32Array([
+                -1, -1,  1, -1,  -1, 1,
+                -1, 1,   1, -1,   1, 1
+            ]);
+            
+            const texCoords = new Float32Array([
+                0, 1,  1, 1,  0, 0,
+                0, 0,  1, 1,  1, 0
+            ]);
+            
+            if (glBuffer) gl.deleteBuffer(glBuffer);
+            glBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, glBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+            
+            const texBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, texCoords, gl.STATIC_DRAW);
+            glProgram.texBuffer = texBuffer;
+            
+            return true;
+        }
+
+        function renderWebGL(sourceCanvas) {
+            if (!gl || !glProgram) return false;
+            
+            const width = sourceCanvas.width * upscaleFactor;
+            const height = sourceCanvas.height * upscaleFactor;
+            
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+                gl.viewport(0, 0, width, height);
+            }
+            
+            gl.bindTexture(gl.TEXTURE_2D, glTexture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+            
+            gl.useProgram(glProgram);
+            
+            const posLoc = gl.getAttribLocation(glProgram, 'a_position');
+            gl.bindBuffer(gl.ARRAY_BUFFER, glBuffer);
+            gl.enableVertexAttribArray(posLoc);
+            gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+            
+            const texLoc = gl.getAttribLocation(glProgram, 'a_texCoord');
+            gl.bindBuffer(gl.ARRAY_BUFFER, glProgram.texBuffer);
+            gl.enableVertexAttribArray(texLoc);
+            gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 0, 0);
+            
+            const texSizeLoc = gl.getUniformLocation(glProgram, 'u_textureSize');
+            if (texSizeLoc) {
+                gl.uniform2f(texSizeLoc, sourceCanvas.width, sourceCanvas.height);
+            }
+            
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            return true;
+        }
+
+        function setUpscaleFactor() {
+            upscaleFactor = parseInt(document.getElementById('upscaleSelect').value);
+            if (upscaleFactor > 1 && !useWebGL) {
+                initWebGL();
+                if (useWebGL) {
+                    setupWebGLProgram(interpolationMode);
+                    imageCanvas = document.createElement('canvas');
+                    imageCtx = imageCanvas.getContext('2d');
+                }
+            }
+            resolutionEl.textContent = `${video.videoWidth || 0}x${video.videoHeight || 0}` + 
+                (upscaleFactor > 1 ? ` → ${(video.videoWidth || 0) * upscaleFactor}x${(video.videoHeight || 0) * upscaleFactor}` : '');
+        }
+
+        function setInterpolationMode() {
+            interpolationMode = document.getElementById('interpSelect').value;
+            if (useWebGL && upscaleFactor > 1) {
+                setupWebGLProgram(interpolationMode);
+            }
+        }
+
+        // Frame monitoring
         function setupFrameCallback() {
             if (!video.requestVideoFrameCallback) return;
             
@@ -618,7 +967,6 @@
             }
         }
 
-        // Watchdog timer for freeze detection
         function startWatchdog() {
             stopWatchdog();
             watchdogTimer = setInterval(() => {
@@ -711,57 +1059,6 @@
             await autoReconnect();
         }
 
-        async function changeResolution() {
-            const resolution = document.getElementById('resolutionSelect').value;
-            if (resolution === 'native') {
-                targetResolution = { width: 1920, height: 1080 };
-            } else {
-                const [w, h] = resolution.split('x').map(Number);
-                targetResolution = { width: w, height: h };
-            }
-            
-            if (stream) {
-                statusEl.textContent = 'Changing resolution...';
-                stream.getTracks().forEach(track => track.stop());
-                await startCameraInternal();
-            }
-        }
-        
-        function toggleUpscale() {
-            upscaleFactor = document.getElementById('upscaleCheck').checked ? 2 : 1;
-            if (video.readyState >= 2) {
-                updateCanvasResolution();
-            }
-            updateCanvasStyle();
-        }
-        
-        function updateCanvasResolution() {
-            const displayWidth = video.videoWidth * upscaleFactor;
-            const displayHeight = video.videoHeight * upscaleFactor;
-            
-            canvas.width = displayWidth;
-            canvas.height = displayHeight;
-            procCanvas.width = displayWidth;
-            procCanvas.height = displayHeight;
-            
-            resolutionEl.textContent = `${video.videoWidth}x${video.videoHeight}` + 
-                (upscaleFactor > 1 ? ` → ${displayWidth}x${displayHeight}` : '');
-        }
-        
-        function updateCanvasStyle() {
-            if (upscaleFactor > 1) {
-                canvas.style.maxWidth = 'none';
-                canvas.style.maxHeight = 'none';
-                canvas.style.width = canvas.width + 'px';
-                canvas.style.height = canvas.height + 'px';
-            } else {
-                canvas.style.maxWidth = '100%';
-                canvas.style.maxHeight = '100%';
-                canvas.style.width = '';
-                canvas.style.height = '';
-            }
-        }
-
         async function startCamera() {
             await startCameraInternal();
             document.getElementById('startScreen').classList.add('hidden');
@@ -782,21 +1079,13 @@
                 
                 savedDeviceId = deviceId;
                 
-                const constraints = {
+                stream = await navigator.mediaDevices.getUserMedia({
                     video: {
-                        deviceId: deviceId ? { exact: deviceId } : undefined
+                        deviceId: deviceId ? { exact: deviceId } : undefined,
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
                     }
-                };
-                
-                if (document.getElementById('resolutionSelect').value !== 'native') {
-                    constraints.video.width = { ideal: targetResolution.width };
-                    constraints.video.height = { ideal: targetResolution.height };
-                } else {
-                    constraints.video.width = { ideal: 1920 };
-                    constraints.video.height = { ideal: 1080 };
-                }
-                
-                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                });
                 
                 video.srcObject = stream;
                 video.autoplay = true;
@@ -822,8 +1111,21 @@
                 
                 await new Promise((resolve, reject) => {
                     video.onloadedmetadata = () => {
-                        updateCanvasResolution();
-                        updateCanvasStyle();
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        procCanvas.width = video.videoWidth;
+                        procCanvas.height = video.videoHeight;
+                        resolutionEl.textContent = `${video.videoWidth}x${video.videoHeight}`;
+                        
+                        if (upscaleFactor > 1 && useWebGL) {
+                            glTexture = gl.createTexture();
+                            gl.bindTexture(gl.TEXTURE_2D, glTexture);
+                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                        }
+                        
                         resolve();
                     };
                     video.onerror = reject;
@@ -967,24 +1269,27 @@
                     imageData = applyFilters(imageData);
                 }
                 
-                ctx.fillStyle = '#000';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                
-                ctx.save();
-                ctx.translate(offsetX, offsetY);
-                ctx.scale(scale, scale);
-                
-                const tempCanvas = document.createElement('canvas');
-                tempCanvas.width = imageData.width;
-                tempCanvas.height = imageData.height;
-                tempCanvas.getContext('2d').putImageData(imageData, 0, 0);
-                
-                if (upscaleFactor > 1) {
-                    ctx.drawImage(tempCanvas, 0, 0, canvas.width, canvas.height);
+                if (upscaleFactor > 1 && useWebGL) {
+                    imageCanvas.width = procCanvas.width;
+                    imageCanvas.height = procCanvas.height;
+                    imageCtx.putImageData(imageData, 0, 0);
+                    renderWebGL(imageCanvas);
                 } else {
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    
+                    ctx.save();
+                    ctx.translate(offsetX, offsetY);
+                    ctx.scale(scale, scale);
+                    
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = imageData.width;
+                    tempCanvas.height = imageData.height;
+                    tempCanvas.getContext('2d').putImageData(imageData, 0, 0);
+                    
                     ctx.drawImage(tempCanvas, 0, 0);
+                    ctx.restore();
                 }
-                ctx.restore();
             }
             
             animationId = requestAnimationFrame(renderLoop);
@@ -1006,7 +1311,6 @@
             document.getElementById(type + 'Val').textContent = value;
         }
 
-        // Mouse wheel zoom
         container.addEventListener('wheel', (e) => {
             e.preventDefault();
             const delta = e.deltaY > 0 ? -0.1 : 0.1;
@@ -1037,7 +1341,6 @@
             profileSelect.value = '';
         }
 
-        // Pan with drag
         container.addEventListener('mousedown', (e) => {
             isDragging = true;
             lastX = e.clientX;
@@ -1063,7 +1366,6 @@
             container.style.cursor = 'grab';
         });
 
-        // Keyboard shortcuts
         window.addEventListener('keydown', (e) => {
             if (e.code === 'Space') {
                 e.preventDefault();
@@ -1169,14 +1471,12 @@
             document.getElementById('sidebar').classList.toggle('hidden');
         }
 
-        // Enter key in profile name input saves profile
         document.getElementById('profileNameInput').addEventListener('keydown', (e) => {
             if (e.code === 'Enter') {
                 saveProfile();
             }
         });
 
-        // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
             stopWatchdog();
             cancelFrameCallback();
