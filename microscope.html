@@ -732,6 +732,7 @@
             if (video.readyState >= 2) {
                 updateCanvasResolution();
             }
+            updateCanvasStyle();
         }
         
         function updateCanvasResolution() {
@@ -745,6 +746,20 @@
             
             resolutionEl.textContent = `${video.videoWidth}x${video.videoHeight}` + 
                 (upscaleFactor > 1 ? ` → ${displayWidth}x${displayHeight}` : '');
+        }
+        
+        function updateCanvasStyle() {
+            if (upscaleFactor > 1) {
+                canvas.style.maxWidth = 'none';
+                canvas.style.maxHeight = 'none';
+                canvas.style.width = canvas.width + 'px';
+                canvas.style.height = canvas.height + 'px';
+            } else {
+                canvas.style.maxWidth = '100%';
+                canvas.style.maxHeight = '100%';
+                canvas.style.width = '';
+                canvas.style.height = '';
+            }
         }
 
         async function startCamera() {
@@ -808,6 +823,7 @@
                 await new Promise((resolve, reject) => {
                     video.onloadedmetadata = () => {
                         updateCanvasResolution();
+                        updateCanvasStyle();
                         resolve();
                     };
                     video.onerror = reject;
