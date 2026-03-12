@@ -6,6 +6,7 @@ A web-based viewer for USB microscopes with real-time filters, zoom/pan, and sna
 
 ## Features
 
+- **Freeze Detection & Auto-Reconnect** — Detects when USB camera freezes (common when moving the camera) and auto-restarts it
 - **Smooth Zoom & Pan** — Mouse wheel to zoom, drag to pan around the image
 - **Real-time Image Filters** — Apply filters without freezing:
   - 🔧 **Sharpen** — Enhance fine details
@@ -56,6 +57,22 @@ Recommended settings:
 - Position microscope close to joint (10-20mm)
 - Use side lighting from a desk lamp instead of ring LED
 - Take snapshots and zoom in for detail
+
+## Freeze Detection & Auto-Reconnection
+
+**Problem:** When you move the USB microscope, the image often freezes due to USB bandwidth interruption.
+
+**Solution:** The app now detects freezes automatically and attempts to reconnect:
+
+1. **Automatic Detection** — Monitors frame delivery; if no frame for 1.5 seconds, declares "frozen"
+2. **Auto-Reconnect** — Stops and restarts the camera automatically (up to 5 attempts)
+3. **Visual Feedback** — Orange border + overlay shows "FROZEN" or "RECONNECTING" status
+4. **Manual Override** — Click the 🔄 **Reconnect** button to force reconnection
+
+The status bar shows:
+- **Live** — Camera working normally
+- **FROZEN** — Frame delivery stopped, attempting auto-reconnect
+- **RECONNECTING...** — Actively restarting the camera
 
 ## Requirements
 
