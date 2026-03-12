@@ -963,7 +963,11 @@
                 tempCanvas.height = imageData.height;
                 tempCanvas.getContext('2d').putImageData(imageData, 0, 0);
                 
-                ctx.drawImage(tempCanvas, 0, 0);
+                if (upscaleFactor > 1) {
+                    ctx.drawImage(tempCanvas, 0, 0, canvas.width, canvas.height);
+                } else {
+                    ctx.drawImage(tempCanvas, 0, 0);
+                }
                 ctx.restore();
             }
             
