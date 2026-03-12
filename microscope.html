@@ -81,6 +81,24 @@
             font-family: monospace;
             font-size: 14px;
         }
+        .profile-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .profile-controls select {
+            background: #3a3a3a;
+            color: #fff;
+            border: 1px solid #555;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+            min-width: 150px;
+        }
+        .profile-controls button {
+            padding: 8px 12px;
+            font-size: 12px;
+        }
         .filter-controls {
             display: flex;
             gap: 10px;
@@ -247,6 +265,56 @@
             border-radius: 3px;
             color: #fff;
         }
+        /* Modal dialog styles */
+        .modal {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+        }
+        .modal.show {
+            display: flex;
+        }
+        .modal-content {
+            background: #2d2d2d;
+            padding: 30px;
+            border-radius: 8px;
+            min-width: 400px;
+        }
+        .modal-content h3 {
+            margin-bottom: 20px;
+            font-size: 18px;
+        }
+        .modal-content input {
+            width: 100%;
+            padding: 10px;
+            font-size: 14px;
+            background: #3a3a3a;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .modal-content button {
+            padding: 10px 20px;
+            margin-right: 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .modal-content button.primary {
+            background: #4a9eff;
+            color: white;
+            border: none;
+        }
+        .modal-content button.secondary {
+            background: #555;
+            color: white;
+            border: none;
+        }
     </style>
 </head>
 <body>
@@ -258,6 +326,15 @@
     <div class="toolbar">
         <button onclick="takeSnapshot()">📷 Snapshot</button>
         <button id="reconnectBtn" class="secondary hidden" onclick="manualReconnect()">🔄 Reconnect</button>
+        
+        <div class="profile-controls">
+            <select id="profileSelect" onchange="loadProfile()">
+                <option value="">-- Select Profile --</option>
+            </select>
+            <button class="secondary" onclick="saveProfilePrompt()">💾 Save</button>
+            <button class="secondary" onclick="deleteProfile()">🗑️ Del</button>
+        </div>
+        
         <div class="zoom-controls">
             <button class="secondary" onclick="adjustZoom(-0.5)">−</button>
             <span class="zoom-level" id="zoomLevel">1.0x</span>
@@ -310,7 +387,19 @@
     </div>
 
     <div class="help">
-        <kbd>Scroll</kbd> Zoom | <kbd>Drag</kbd> Pan | <kbd>Space</kbd> Snapshot | <kbd>1-5</kbd> Filters
+        <kbd>Scroll</kbd> Zoom | <kbd>Drag</kbd> Pan | <kbd>Space</kbd> Quick Save | <kbd>Shift+Space</kbd> Named Save | <kbd>1-5</kbd> Filters
+    </div>
+
+
+    <div class="modal" id="profileModal">
+        <div class="modal-content">
+            <h3>Save Profile</h3>
+            <input type="text" id="profileNameInput" placeholder="Enter profile name (e.g., Solder Mode)" autofocus>
+            <div>
+                <button class="primary" onclick="saveProfile()">Save</button>
+                <button class="secondary" onclick="closeProfileModal()">Cancel</button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -323,6 +412,7 @@
         const statusInfo = document.getElementById('statusInfo');
         const freezeOverlay = document.getElementById('freezeOverlay');
         const reconnectBtn = document.getElementById('reconnectBtn');
+        const profileSelect = document.getElementById('profileSelect');
         
         let video = document.createElement('video');
         let stream = null;
@@ -361,9 +451,108 @@
         let watchdogTimer = null;
         let reconnectAttempts = 0;
         let savedDeviceId = null;
-        const FREEZE_THRESHOLD_MS = 1500; // Time without new frame = frozen
-        const WATCHDOG_INTERVAL_MS = 500; // Check every 500ms
+        const FREEZE_THRESHOLD_MS = 1500;
+        const WATCHDOG_INTERVAL_MS = 500;
         const MAX_RECONNECT_ATTEMPTS = 5;
+
+        // PROFILE MANAGEMENT
+        const STORAGE_KEY = 'microscopeProfiles';
+        
+        function getProfiles() {
+            try {
+                return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+            } catch {
+                return {};
+            }
+        }
+        
+        function saveProfiles(profiles) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles));
+        }
+        
+        function updateProfileSelect() {
+            const profiles = getProfiles();
+            profileSelect.innerHTML = '<option value="">-- Select Profile --</option>';
+            Object.keys(profiles).forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                profileSelect.appendChild(option);
+            });
+        }
+        
+        function saveProfilePrompt() {
+            document.getElementById('profileNameInput').value = '';
+            document.getElementById('profileModal').classList.add('show');
+            document.getElementById('profileNameInput').focus();
+        }
+        
+        function closeProfileModal() {
+            document.getElementById('profileModal').classList.remove('show');
+        }
+        
+        function saveProfile() {
+            const name = document.getElementById('profileNameInput').value.trim();
+            if (!name) {
+                alert('Please enter a profile name');
+                return;
+            }
+            
+            const profiles = getProfiles();
+            profiles[name] = { ...filters };
+            saveProfiles(profiles);
+            updateProfileSelect();
+            profileSelect.value = name;
+            closeProfileModal();
+            statusEl.textContent = `Profile "${name}" saved!`;
+            setTimeout(() => statusEl.textContent = isFrozen ? 'FROZEN' : 'Live', 2000);
+        }
+        
+        function loadProfile() {
+            const name = profileSelect.value;
+            if (!name) return;
+            
+            const profiles = getProfiles();
+            if (profiles[name]) {
+                filters = { ...profiles[name] };
+                applyFilterUI();
+                statusEl.textContent = `Profile "${name}" loaded!`;
+                setTimeout(() => statusEl.textContent = isFrozen ? 'FROZEN' : 'Live', 2000);
+            }
+        }
+        
+        function deleteProfile() {
+            const name = profileSelect.value;
+            if (!name) {
+                alert('Please select a profile to delete');
+                return;
+            }
+            
+            if (!confirm(`Delete profile "${name}"?`)) return;
+            
+            const profiles = getProfiles();
+            delete profiles[name];
+            saveProfiles(profiles);
+            updateProfileSelect();
+            statusEl.textContent = `Profile "${name}" deleted!`;
+            setTimeout(() => statusEl.textContent = isFrozen ? 'FROZEN' : 'Live', 2000);
+        }
+        
+        function applyFilterUI() {
+            // Update button states
+            ['sharpen', 'edge', 'invert', 'solder', 'mono'].forEach(filter => {
+                const btn = document.getElementById('btn' + filter.charAt(0).toUpperCase() + filter.slice(1));
+                if (btn) btn.classList.toggle('active', filters[filter]);
+            });
+            
+            // Update sliders
+            document.getElementById('contrastSlider').value = filters.contrast;
+            document.getElementById('contrastVal').textContent = filters.contrast;
+            document.getElementById('brightnessSlider').value = filters.brightness;
+            document.getElementById('brightnessVal').textContent = filters.brightness;
+            document.getElementById('saturationSlider').value = filters.saturation;
+            document.getElementById('saturationVal').textContent = filters.saturation;
+        }
 
         // Frame monitoring with requestVideoFrameCallback (Chrome/Edge)
         function setupFrameCallback() {
@@ -373,7 +562,6 @@
                 if (!isReconnecting) {
                     lastFrameTime = Date.now();
                     if (isFrozen) {
-                        // Frame resumed - unfreeze
                         setFrozen(false);
                     }
                 }
@@ -389,7 +577,7 @@
             }
         }
 
-        // Watchdog timer for freeze detection (fallback for all browsers)
+        // Watchdog timer for freeze detection
         function startWatchdog() {
             stopWatchdog();
             watchdogTimer = setInterval(() => {
@@ -458,17 +646,14 @@
 
             setReconnecting(true);
             
-            // Stop current stream
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
             }
             cancelFrameCallback();
             
-            // Wait a moment for USB to settle
             await new Promise(r => setTimeout(r, 1000));
             
             try {
-                // Try to restart camera
                 await startCameraInternal();
                 setFrozen(false);
                 setReconnecting(false);
@@ -476,7 +661,6 @@
             } catch (err) {
                 console.error('Reconnection failed:', err);
                 setReconnecting(false);
-                // Will try again via watchdog if still frozen
             }
         }
 
@@ -489,24 +673,21 @@
         async function startCamera() {
             await startCameraInternal();
             document.getElementById('startScreen').classList.add('hidden');
+            updateProfileSelect();
         }
 
         async function startCameraInternal() {
             try {
                 statusEl.textContent = reconnectAttempts > 0 ? 'Reconnecting...' : 'Starting...';
                 
-                // Request camera with specific constraints for microscope
                 const devices = await navigator.mediaDevices.enumerateDevices();
                 const videoDevices = devices.filter(d => d.kind === 'videoinput');
                 
-                // Try to find the microscope (non-default camera)
                 let deviceId = savedDeviceId;
                 if (!deviceId && videoDevices.length > 1) {
-                    // Usually the microscope is the last device
                     deviceId = videoDevices[videoDevices.length - 1].deviceId;
                 }
                 
-                // Save for reconnection attempts
                 savedDeviceId = deviceId;
                 
                 stream = await navigator.mediaDevices.getUserMedia({
@@ -521,7 +702,6 @@
                 video.autoplay = true;
                 video.playsInline = true;
                 
-                // Set up track event listeners for freeze detection
                 const videoTrack = stream.getVideoTracks()[0];
                 if (videoTrack) {
                     videoTrack.onmute = () => {
@@ -550,18 +730,15 @@
                         resolve();
                     };
                     video.onerror = reject;
-                    // Timeout fallback
                     setTimeout(() => reject(new Error('Video load timeout')), 10000);
                 });
                 
                 statusEl.textContent = 'Live';
                 lastFrameTime = Date.now();
                 
-                // Start frame monitoring
                 setupFrameCallback();
                 startWatchdog();
                 
-                // Start render loop if not already running
                 if (!animationId) {
                     renderLoop();
                 }
@@ -578,10 +755,8 @@
             const width = imageData.width;
             const height = imageData.height;
             
-            // Create a copy for processing
             const output = new Uint8ClampedArray(data);
             
-            // Apply brightness and contrast
             const contrast = filters.contrast;
             const brightness = filters.brightness;
             const saturation = filters.saturation;
@@ -593,21 +768,18 @@
                 let g = data[i + 1];
                 let b = data[i + 2];
                 
-                // Brightness
                 if (brightness !== 0) {
                     r = Math.max(0, Math.min(255, r + brightness));
                     g = Math.max(0, Math.min(255, g + brightness));
                     b = Math.max(0, Math.min(255, b + brightness));
                 }
                 
-                // Contrast
                 if (contrast !== 0) {
                     r = Math.max(0, Math.min(255, contrastFactor * (r - 128) + 128));
                     g = Math.max(0, Math.min(255, contrastFactor * (g - 128) + 128));
                     b = Math.max(0, Math.min(255, contrastFactor * (b - 128) + 128));
                 }
                 
-                // Saturation
                 if (saturation !== 0) {
                     const gray = 0.299 * r + 0.587 * g + 0.114 * b;
                     const satFactor = 1 + saturation / 100;
@@ -616,13 +788,11 @@
                     b = Math.max(0, Math.min(255, gray + (b - gray) * satFactor));
                 }
                 
-                // Monochrome (before invert/sharpen)
                 if (filters.mono) {
                     const gray = 0.299 * r + 0.587 * g + 0.114 * b;
                     r = g = b = gray;
                 }
                 
-                // Invert
                 if (filters.invert) {
                     r = 255 - r;
                     g = 255 - g;
@@ -632,14 +802,13 @@
                 output[i] = r;
                 output[i + 1] = g;
                 output[i + 2] = b;
-                output[i + 3] = data[i + 3]; // alpha
+                output[i + 3] = data[i + 3];
             }
             
-            // Sharpen (convolution)
             if (filters.sharpen || filters.edge) {
                 const kernel = filters.edge 
-                    ? [-1, -1, -1, -1, 8, -1, -1, -1, -1] // Edge detection
-                    : [0, -1, 0, -1, 5, -1, 0, -1, 0];    // Sharpen
+                    ? [-1, -1, -1, -1, 8, -1, -1, -1, -1]
+                    : [0, -1, 0, -1, 5, -1, 0, -1, 0];
                 
                 const tempData = new Uint8ClampedArray(output);
                 
@@ -661,17 +830,14 @@
                 }
             }
             
-            // Solder mode - enhance highlights for shiny metal
             if (filters.solder) {
                 for (let i = 0; i < data.length; i += 4) {
                     let r = output[i];
                     let g = output[i + 1];
                     let b = output[i + 2];
                     
-                    // Convert to perceived brightness
                     const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
                     
-                    // Enhance bright areas (solder joints are reflective)
                     if (brightness > 150) {
                         const boost = (brightness - 150) / 105 * 50;
                         r = Math.min(255, r + boost);
@@ -679,7 +845,6 @@
                         b = Math.min(255, b + boost);
                     }
                     
-                    // Slight blue tint for better contrast on copper
                     b = Math.min(255, b * 1.1);
                     
                     output[i] = r;
@@ -693,13 +858,10 @@
 
         function renderLoop() {
             if (video.readyState >= 2 && !isFrozen) {
-                // Draw to processing canvas
                 procCtx.drawImage(video, 0, 0);
                 
-                // Get image data
                 let imageData = procCtx.getImageData(0, 0, procCanvas.width, procCanvas.height);
                 
-                // Apply filters if any are active
                 const anyFilter = filters.sharpen || filters.edge || filters.invert || 
                                  filters.solder || filters.mono || filters.contrast !== 0 || 
                                  filters.brightness !== 0 || filters.saturation !== 0;
@@ -708,7 +870,6 @@
                     imageData = applyFilters(imageData);
                 }
                 
-                // Put processed data to canvas
                 ctx.fillStyle = '#000';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
                 
@@ -716,7 +877,6 @@
                 ctx.translate(offsetX, offsetY);
                 ctx.scale(scale, scale);
                 
-                // Create temp canvas for filtered image
                 const tempCanvas = document.createElement('canvas');
                 tempCanvas.width = imageData.width;
                 tempCanvas.height = imageData.height;
@@ -734,7 +894,6 @@
             document.getElementById('btn' + name.charAt(0).toUpperCase() + name.slice(1))
                 .classList.toggle('active', filters[name]);
             
-            // Solder mode disables other enhancements
             if (name === 'solder' && filters.solder) {
                 filters.sharpen = false;
                 document.getElementById('btnSharpen').classList.remove('active');
@@ -765,7 +924,6 @@
             offsetY = 0;
             zoomLevelEl.textContent = '1.0x';
             
-            // Reset filters too
             filters = { sharpen: false, edge: false, invert: false, solder: false, mono: false, contrast: 0, brightness: 0, saturation: 0 };
             document.querySelectorAll('.filter-controls button').forEach(btn => btn.classList.remove('active'));
             document.getElementById('contrastSlider').value = 0;
@@ -774,6 +932,8 @@
             document.getElementById('brightnessVal').textContent = '0';
             document.getElementById('saturationSlider').value = 0;
             document.getElementById('saturationVal').textContent = '0';
+            
+            profileSelect.value = '';
         }
 
         // Pan with drag
@@ -806,7 +966,11 @@
         window.addEventListener('keydown', (e) => {
             if (e.code === 'Space') {
                 e.preventDefault();
-                takeSnapshot();
+                if (e.shiftKey) {
+                    takeSnapshotNamed();
+                } else {
+                    takeSnapshot();
+                }
             }
             if (e.code === 'KeyR') {
                 resetView();
@@ -818,19 +982,12 @@
             if (e.code === 'Digit5') toggleFilter('mono');
         });
 
-        function takeSnapshot() {
-            if (isFrozen) {
-                alert('Camera is frozen - please reconnect first');
-                return;
-            }
-            
-            // Create high-res snapshot with current filters
+        function createSnapshotDataUrl() {
             const snapCanvas = document.createElement('canvas');
             snapCanvas.width = video.videoWidth;
             snapCanvas.height = video.videoHeight;
             const snapCtx = snapCanvas.getContext('2d');
             
-            // Apply same processing
             procCtx.drawImage(video, 0, 0);
             let imageData = procCtx.getImageData(0, 0, procCanvas.width, procCanvas.height);
             
@@ -843,20 +1000,52 @@
             }
             
             snapCtx.putImageData(imageData, 0, 0);
+            return snapCanvas.toDataURL('image/jpeg', 0.95);
+        }
+
+        function takeSnapshot() {
+            if (isFrozen) {
+                alert('Camera is frozen - please reconnect first');
+                return;
+            }
             
-            const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.95);
+            const dataUrl = createSnapshotDataUrl();
             const timestamp = new Date().toLocaleTimeString();
             
             snapshots.unshift({ dataUrl, timestamp });
             updateSnapshotList();
             
-            // Auto-download
             const link = document.createElement('a');
             link.download = `microscope_${Date.now()}.jpg`;
             link.href = dataUrl;
             link.click();
             
             statusEl.textContent = `Snapshot saved!`;
+            setTimeout(() => statusEl.textContent = isFrozen ? 'FROZEN' : 'Live', 2000);
+        }
+
+        function takeSnapshotNamed() {
+            if (isFrozen) {
+                alert('Camera is frozen - please reconnect first');
+                return;
+            }
+            
+            const dataUrl = createSnapshotDataUrl();
+            const timestamp = new Date().toLocaleTimeString();
+            
+            snapshots.unshift({ dataUrl, timestamp });
+            updateSnapshotList();
+            
+            const filename = prompt('Enter filename (without extension):', 'solder_joint');
+            if (filename) {
+                const link = document.createElement('a');
+                link.download = `${filename}.jpg`;
+                link.href = dataUrl;
+                link.click();
+                statusEl.textContent = `Saved as ${filename}.jpg!`;
+            } else {
+                statusEl.textContent = `Snapshot saved!`;
+            }
             setTimeout(() => statusEl.textContent = isFrozen ? 'FROZEN' : 'Live', 2000);
         }
 
@@ -878,6 +1067,13 @@
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('hidden');
         }
+
+        // Enter key in profile name input saves profile
+        document.getElementById('profileNameInput').addEventListener('keydown', (e) => {
+            if (e.code === 'Enter') {
+                saveProfile();
+            }
+        });
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
