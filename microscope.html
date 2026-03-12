@@ -1275,28 +1275,58 @@
                     imageData = applyFilters(imageData);
                 }
                 
-                if (upscaleFactor > 1 && useWebGL) {
-                    imageCanvas.width = procCanvas.width;
-                    imageCanvas.height = procCanvas.height;
-                    imageCtx.putImageData(imageData, 0, 0);
-                    console.log('Rendering WebGL upscale:', procCanvas.width + 'x' + procCanvas.height, '→', (procCanvas.width * upscaleFactor) + 'x' + (procCanvas.height * upscaleFactor));
-                    const success = renderWebGL(imageCanvas);
-                    
-                    if (success) {
-                        // Apply zoom/pan via CSS transform on the canvas element
+                if (upscaleFactor > 1) {
+                    if (useWebGL) {
+                        // WebGL path (high quality)
+                        imageCanvas.width = procCanvas.width;
+                        imageCanvas.height = procCanvas.height;
+                        imageCtx.putImageData(imageData, 0, 0);
+                        console.log('Rendering WebGL upscale:', procCanvas.width + 'x' + procCanvas.height, '→', (procCanvas.width * upscaleFactor) + 'x' + (procCanvas.height * upscaleFactor));
+                        const success = renderWebGL(imageCanvas);
+                        
+                        if (success) {
+                            canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+                            canvas.style.transformOrigin = 'center center';
+                            canvas.style.maxWidth = 'none';
+                            canvas.style.maxHeight = 'none';
+                        }
+                    } else {
+                        // Canvas 2D fallback for upscaling
+                        const targetWidth = procCanvas.width * upscaleFactor;
+                        const targetHeight = procCanvas.height * upscaleFactor;
+                        
+                        // Resize main canvas to upscaled size
+                        if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+                            canvas.width = targetWidth;
+                            canvas.height = targetHeight;
+                        }
+                        
+                        // Create temp canvas for source data
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = imageData.width;
+                        tempCanvas.height = imageData.height;
+                        tempCanvas.getContext('2d').putImageData(imageData, 0, 0);
+                        
+                        // Clear and draw upscaled
+                        ctx.fillStyle = '#000';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(tempCanvas, 0, 0, targetWidth, targetHeight);
+                        
+                        // Apply zoom/pan
                         canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
                         canvas.style.transformOrigin = 'center center';
-                        // Reset max-width/height to allow upscaled display
                         canvas.style.maxWidth = 'none';
                         canvas.style.maxHeight = 'none';
+                        
+                        console.log('Canvas 2D upscale:', procCanvas.width + 'x' + procCanvas.height, '→', targetWidth + 'x' + targetHeight);
                     }
                 } else {
-                    // Reset canvas size to source resolution
+                    // Native resolution (1x)
                     if (canvas.width !== procCanvas.width || canvas.height !== procCanvas.height) {
                         canvas.width = procCanvas.width;
                         canvas.height = procCanvas.height;
                     }
-                    // Reset CSS transforms
+                    
                     canvas.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
                     canvas.style.transformOrigin = 'center center';
                     canvas.style.maxWidth = '100%';
