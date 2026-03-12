@@ -99,6 +99,30 @@
             padding: 8px 12px;
             font-size: 12px;
         }
+        .resolution-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .resolution-controls select {
+            background: #3a3a3a;
+            color: #fff;
+            border: 1px solid #555;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .upscale-toggle {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            color: #aaa;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .upscale-toggle input[type="checkbox"] {
+            cursor: pointer;
+        }
         .filter-controls {
             display: flex;
             gap: 10px;
@@ -335,6 +359,19 @@
             <button class="secondary" onclick="deleteProfile()">🗑️ Del</button>
         </div>
         
+        <div class="resolution-controls">
+            <select id="resolutionSelect" onchange="changeResolution()">
+                <option value="native">Native (Camera Max)</option>
+                <option value="1920x1080">1920×1080 (1080p)</option>
+                <option value="1280x720">1280×720 (720p)</option>
+                <option value="640x480">640×480 (VGA)</option>
+            </select>
+            <label class="upscale-toggle">
+                <input type="checkbox" id="upscaleCheck" onchange="toggleUpscale()">
+                <span>Upscale 2×</span>
+            </label>
+        </div>
+        
         <div class="zoom-controls">
             <button class="secondary" onclick="adjustZoom(-0.5)">−</button>
             <span class="zoom-level" id="zoomLevel">1.0x</span>
@@ -387,7 +424,7 @@
     </div>
 
     <div class="help">
-        <kbd>Scroll</kbd> Zoom | <kbd>Drag</kbd> Pan | <kbd>Space</kbd> Quick Save | <kbd>Shift+Space</kbd> Named Save | <kbd>1-5</kbd> Filters
+        <kbd>Scroll</kbd> Zoom | <kbd>Drag</kbd> Pan | <kbd>Space</kbd> Quick Save | <kbd>Shift+Space</kbd> Named Save | <kbd>1-5</kbd> Filters | Resolution + Upscale controls in toolbar
     </div>
 
 
@@ -442,6 +479,10 @@
         // Offscreen canvas for processing
         let procCanvas = document.createElement('canvas');
         let procCtx = procCanvas.getContext('2d');
+
+        // Resolution and upscaling state
+        let targetResolution = { width: 1920, height: 1080 };
+        let upscaleFactor = 1;
 
         // FREEZE DETECTION STATE
         let isFrozen = false;
@@ -670,6 +711,42 @@
             await autoReconnect();
         }
 
+        async function changeResolution() {
+            const resolution = document.getElementById('resolutionSelect').value;
+            if (resolution === 'native') {
+                targetResolution = { width: 1920, height: 1080 };
+            } else {
+                const [w, h] = resolution.split('x').map(Number);
+                targetResolution = { width: w, height: h };
+            }
+            
+            if (stream) {
+                statusEl.textContent = 'Changing resolution...';
+                stream.getTracks().forEach(track => track.stop());
+                await startCameraInternal();
+            }
+        }
+        
+        function toggleUpscale() {
+            upscaleFactor = document.getElementById('upscaleCheck').checked ? 2 : 1;
+            if (video.readyState >= 2) {
+                updateCanvasResolution();
+            }
+        }
+        
+        function updateCanvasResolution() {
+            const displayWidth = video.videoWidth * upscaleFactor;
+            const displayHeight = video.videoHeight * upscaleFactor;
+            
+            canvas.width = displayWidth;
+            canvas.height = displayHeight;
+            procCanvas.width = displayWidth;
+            procCanvas.height = displayHeight;
+            
+            resolutionEl.textContent = `${video.videoWidth}x${video.videoHeight}` + 
+                (upscaleFactor > 1 ? ` → ${displayWidth}x${displayHeight}` : '');
+        }
+
         async function startCamera() {
             await startCameraInternal();
             document.getElementById('startScreen').classList.add('hidden');
@@ -690,13 +767,21 @@
                 
                 savedDeviceId = deviceId;
                 
-                stream = await navigator.mediaDevices.getUserMedia({
+                const constraints = {
                     video: {
-                        deviceId: deviceId ? { exact: deviceId } : undefined,
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
+                        deviceId: deviceId ? { exact: deviceId } : undefined
                     }
-                });
+                };
+                
+                if (document.getElementById('resolutionSelect').value !== 'native') {
+                    constraints.video.width = { ideal: targetResolution.width };
+                    constraints.video.height = { ideal: targetResolution.height };
+                } else {
+                    constraints.video.width = { ideal: 1920 };
+                    constraints.video.height = { ideal: 1080 };
+                }
+                
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
                 
                 video.srcObject = stream;
                 video.autoplay = true;
@@ -722,11 +807,7 @@
                 
                 await new Promise((resolve, reject) => {
                     video.onloadedmetadata = () => {
-                        canvas.width = video.videoWidth;
-                        canvas.height = video.videoHeight;
-                        procCanvas.width = video.videoWidth;
-                        procCanvas.height = video.videoHeight;
-                        resolutionEl.textContent = `${video.videoWidth}x${video.videoHeight}`;
+                        updateCanvasResolution();
                         resolve();
                     };
                     video.onerror = reject;
