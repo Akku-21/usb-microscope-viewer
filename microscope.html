@@ -465,6 +465,9 @@
         let procCanvas = document.createElement('canvas');
         let procCtx = procCanvas.getContext('2d');
 
+        // Separate WebGL canvas (can't mix 2D and WebGL on same canvas)
+        let glCanvas = document.createElement('canvas');
+
         let upscaleFactor = 1;
         let interpolationMode = 'linear';
         let useWebGL = false;
@@ -587,16 +590,19 @@
         // WEBGL UPSCALING SETUP
         function initWebGL() {
             try {
-                gl = canvas.getContext('webgl', { 
+                // Use separate canvas for WebGL - can't mix 2D and WebGL on same canvas
+                gl = glCanvas.getContext('webgl', { 
                     antialias: true,
                     preserveDrawingBuffer: true 
-                }) || canvas.getContext('experimental-webgl');
+                }) || glCanvas.getContext('experimental-webgl');
                 
                 if (!gl) {
                     console.log('WebGL not available, falling back to 2D canvas');
                     useWebGL = false;
                     return false;
                 }
+                
+                console.log('WebGL context created successfully');
 
                 const vertexShaderSource = `
                     attribute vec2 a_position;
@@ -889,37 +895,46 @@
 
         function renderWebGL(sourceCanvas) {
             if (!gl || !glProgram) return false;
-            
+
             const width = sourceCanvas.width * upscaleFactor;
             const height = sourceCanvas.height * upscaleFactor;
-            
-            if (canvas.width !== width || canvas.height !== height) {
-                canvas.width = width;
-                canvas.height = height;
+
+            // Resize WebGL canvas
+            if (glCanvas.width !== width || glCanvas.height !== height) {
+                glCanvas.width = width;
+                glCanvas.height = height;
                 gl.viewport(0, 0, width, height);
             }
-            
+
             gl.bindTexture(gl.TEXTURE_2D, glTexture);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
-            
+
             gl.useProgram(glProgram);
-            
+
             const posLoc = gl.getAttribLocation(glProgram, 'a_position');
             gl.bindBuffer(gl.ARRAY_BUFFER, glBuffer);
             gl.enableVertexAttribArray(posLoc);
             gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-            
+
             const texLoc = gl.getAttribLocation(glProgram, 'a_texCoord');
             gl.bindBuffer(gl.ARRAY_BUFFER, glProgram.texBuffer);
             gl.enableVertexAttribArray(texLoc);
             gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 0, 0);
-            
+
             const texSizeLoc = gl.getUniformLocation(glProgram, 'u_textureSize');
             if (texSizeLoc) {
                 gl.uniform2f(texSizeLoc, sourceCanvas.width, sourceCanvas.height);
             }
-            
+
             gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+            // Now copy WebGL result to main canvas (2D context)
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+            }
+            ctx.drawImage(glCanvas, 0, 0);
+
             return true;
         }
 
