@@ -801,40 +801,42 @@
                     uniform sampler2D u_texture;
                     uniform vec2 u_textureSize;
                     
-                    float lanczos(float x, float a) {
-                        if (abs(x) < 0.0001) return 1.0;
-                        if (abs(x) >= a) return 0.0;
-                        float pi_x = 3.14159265359 * x;
-                        float a_x = x / a;
-                        return a * sin(pi_x) * sin(pi_x * a_x) / (pi_x * pi_x);
+                    float lanczos(float x) {
+                        float pi = 3.14159265359;
+                        if (abs(x) < 0.001) return 1.0;
+                        if (abs(x) > 3.0) return 0.0;
+                        float px = pi * x;
+                        return 3.0 * sin(px) * sin(px / 3.0) / (px * px);
+                    }
+                    
+                    vec4 samplePixel(float dx, float dy) {
+                        vec2 coord = v_texCoord + vec2(dx, dy) / u_textureSize;
+                        coord = clamp(coord, 0.0, 1.0);
+                        return texture2D(u_texture, coord);
                     }
                     
                     void main() {
-                        vec2 texSize = u_textureSize;
-                        vec2 invTexSize = 1.0 / texSize;
-                        vec2 texPos = v_texCoord * texSize;
-                        vec2 center = floor(texPos - 0.5) + 0.5;
-                        vec2 f = texPos - center;
+                        vec2 uv = v_texCoord * u_textureSize;
+                        vec2 f = fract(uv);
                         
                         vec4 color = vec4(0.0);
                         float weightSum = 0.0;
                         
-                        for (int y = -3; y <= 3; y++) {
-                            for (int x = -3; x <= 3; x++) {
-                                vec2 samplePos = center + vec2(float(x), float(y));
-                                vec2 clampedPos = clamp(samplePos, vec2(0.0), texSize - 1.0);
-                                vec2 texCoord = clampedPos * invTexSize;
-                                
-                                float wx = lanczos(float(x) - f.x, 3.0);
-                                float wy = lanczos(float(y) - f.y, 3.0);
-                                float weight = wx * wy;
-                                
-                                color += texture2D(u_texture, texCoord) * weight;
-                                weightSum += weight;
+                        for (int i = -3; i <= 3; i++) {
+                            for (int j = -3; j <= 3; j++) {
+                                float wx = lanczos(float(i) - f.x);
+                                float wy = lanczos(float(j) - f.y);
+                                float w = wx * wy;
+                                color += samplePixel(float(i), float(j)) * w;
+                                weightSum += w;
                             }
                         }
                         
-                        gl_FragColor = color / weightSum;
+                        if (weightSum > 0.001) {
+                            gl_FragColor = color / weightSum;
+                        } else {
+                            gl_FragColor = texture2D(u_texture, v_texCoord);
+                        }
                     }
                 `
             };
