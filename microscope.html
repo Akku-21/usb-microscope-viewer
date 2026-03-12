@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USB Microscope Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .toolbar {
+            background: #2d2d2d;
+            padding: 10px 20px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            border-bottom: 1px solid #444;
+            flex-wrap: wrap;
+        }
+        .toolbar button {
+            background: #4a9eff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        .toolbar button:hover { background: #3a8eef; }
+        .toolbar button.secondary {
+            background: #555;
+        }
+        .toolbar button.secondary:hover { background: #666; }
+        .toolbar button.active {
+            background: #4a9eff;
+            box-shadow: 0 0 0 2px #4a9eff;
+        }
+        .toolbar .info {
+            margin-left: auto;
+            color: #aaa;
+            font-size: 12px;
+        }
+        .zoom-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .zoom-controls button {
+            padding: 8px 15px;
+            font-size: 16px;
+        }
+        .zoom-level {
+            min-width: 60px;
+            text-align: center;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        .filter-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 10px 20px;
+            background: #252525;
+            border-bottom: 1px solid #444;
+        }
+        .filter-controls button {
+            padding: 8px 16px;
+            font-size: 12px;
+            background: #3a3a3a;
+            color: #ddd;
+            border: 1px solid #555;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .filter-controls button:hover { background: #4a4a4a; }
+        .filter-controls button.active {
+            background: #4a9eff;
+            color: white;
+            border-color: #4a9eff;
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        }
+        .slider-container label {
+            color: #aaa;
+            min-width: 70px;
+        }
+        .slider-container input[type="range"] {
+            width: 100px;
+        }
+        .slider-container span {
+            min-width: 40px;
+            text-align: center;
+            font-family: monospace;
+            color: #4a9eff;
+        }
+        .main-container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        .video-container {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            position: relative;
+            cursor: grab;
+            overflow: hidden;
+        }
+        .video-container:active { cursor: grabbing; }
+        .video-container canvas {
+            max-width: 100%;
+            max-height: 100%;
+            display: block;
+        }
+        .sidebar {
+            width: 250px;
+            background: #2d2d2d;
+            border-left: 1px solid #444;
+            display: flex;
+            flex-direction: column;
+        }
+        .sidebar h3 {
+            padding: 15px;
+            border-bottom: 1px solid #444;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .snapshot-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        .snapshot-item {
+            background: #3a3a3a;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            padding: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .snapshot-item:hover { background: #4a4a4a; }
+        .snapshot-item img {
+            width: 100%;
+            border-radius: 2px;
+            display: block;
+            margin-bottom: 5px;
+        }
+        .snapshot-item .time {
+            font-size: 11px;
+            color: #888;
+        }
+        .start-screen {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .start-screen h1 {
+            margin-bottom: 30px;
+            font-size: 24px;
+        }
+        .start-screen button {
+            background: #4a9eff;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .hidden { display: none !important; }
+        .help {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 10px 15px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #aaa;
+            pointer-events: none;
+        }
+        .help kbd {
+            background: #444;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <div class="start-screen" id="startScreen">
+        <h1>USB Microscope Viewer</h1>
+        <button onclick="startCamera()">Start Camera</button>
+    </div>
+
+    <div class="toolbar">
+        <button onclick="takeSnapshot()">📷 Snapshot</button>
+        <div class="zoom-controls">
+            <button class="secondary" onclick="adjustZoom(-0.5)">−</button>
+            <span class="zoom-level" id="zoomLevel">1.0x</span>
+            <button class="secondary" onclick="adjustZoom(0.5)">+</button>
+            <button class="secondary" onclick="resetView()">Reset</button>
+        </div>
+        <button class="secondary" onclick="toggleSidebar()">📁 Snapshots</button>
+        <div class="info">
+            <span id="resolution">-</span> | 
+            <span id="status">Ready</span>
+        </div>
+    </div>
+
+    <div class="filter-controls">
+        <button id="btnSharpen" onclick="toggleFilter('sharpen')">🔧 Sharpen</button>
+        <button id="btnEdge" onclick="toggleFilter('edge')">📐 Edges</button>
+        <button id="btnInvert" onclick="toggleFilter('invert')">🔄 Invert</button>
+        <button id="btnSolder" onclick="toggleFilter('solder')">⚡ Solder Mode</button>
+        <button id="btnMono" onclick="toggleFilter('mono')">⚫ Mono</button>
+        
+        <div class="slider-container">
+            <label>Contrast:</label>
+            <input type="range" id="contrastSlider" min="-100" max="100" value="0" oninput="updateFilter('contrast', this.value)">
+            <span id="contrastVal">0</span>
+        </div>
+        
+        <div class="slider-container">
+            <label>Brightness:</label>
+            <input type="range" id="brightnessSlider" min="-100" max="100" value="0" oninput="updateFilter('brightness', this.value)">
+            <span id="brightnessVal">0</span>
+        </div>
+
+        <div class="slider-container">
+            <label>Saturation:</label>
+            <input type="range" id="saturationSlider" min="-100" max="100" value="0" oninput="updateFilter('saturation', this.value)">
+            <span id="saturationVal">0</span>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="video-container" id="videoContainer">
+            <canvas id="videoCanvas"></canvas>
+        </div>
+        
+        <div class="sidebar hidden" id="sidebar">
+            <h3>Snapshots</h3>
+            <div class="snapshot-list" id="snapshotList"></div>
+        </div>
+    </div>
+
+    <div class="help">
+        <kbd>Scroll</kbd> Zoom | <kbd>Drag</kbd> Pan | <kbd>Space</kbd> Snapshot | <kbd>1-5</kbd> Filters
+    </div>
+
+    <script>
+        const canvas = document.getElementById('videoCanvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const container = document.getElementById('videoContainer');
+        const zoomLevelEl = document.getElementById('zoomLevel');
+        const resolutionEl = document.getElementById('resolution');
+        const statusEl = document.getElementById('status');
+        
+        let video = document.createElement('video');
+        let stream = null;
+        let animationId = null;
+        
+        // View state
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+        let isDragging = false;
+        let lastX = 0;
+        let lastY = 0;
+        let snapshots = [];
+
+        // Filter state
+        let filters = {
+            sharpen: false,
+            edge: false,
+            invert: false,
+            solder: false,
+            mono: false,
+            contrast: 0,
+            brightness: 0,
+            saturation: 0
+        };
+
+        // Offscreen canvas for processing
+        let procCanvas = document.createElement('canvas');
+        let procCtx = procCanvas.getContext('2d');
+
+        async function startCamera() {
+            try {
+                statusEl.textContent = 'Starting...';
+                
+                // Request camera with specific constraints for microscope
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+                
+                // Try to find the microscope (non-default camera)
+                let deviceId = undefined;
+                if (videoDevices.length > 1) {
+                    // Usually the microscope is the last device
+                    deviceId = videoDevices[videoDevices.length - 1].deviceId;
+                }
+                
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        deviceId: deviceId ? { exact: deviceId } : undefined,
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                });
+                
+                video.srcObject = stream;
+                video.autoplay = true;
+                video.playsInline = true;
+                
+                await new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        procCanvas.width = video.videoWidth;
+                        procCanvas.height = video.videoHeight;
+                        resolutionEl.textContent = `${video.videoWidth}x${video.videoHeight}`;
+                        resolve();
+                    };
+                });
+                
+                document.getElementById('startScreen').classList.add('hidden');
+                statusEl.textContent = 'Live';
+                
+                renderLoop();
+                
+            } catch (err) {
+                alert('Could not start camera: ' + err.message);
+                statusEl.textContent = 'Error';
+            }
+        }
+
+        function applyFilters(imageData) {
+            const data = imageData.data;
+            const width = imageData.width;
+            const height = imageData.height;
+            
+            // Create a copy for processing
+            const output = new Uint8ClampedArray(data);
+            
+            // Apply brightness and contrast
+            const contrast = filters.contrast;
+            const brightness = filters.brightness;
+            const saturation = filters.saturation;
+            
+            const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+            
+            for (let i = 0; i < data.length; i += 4) {
+                let r = data[i];
+                let g = data[i + 1];
+                let b = data[i + 2];
+                
+                // Brightness
+                if (brightness !== 0) {
+                    r = Math.max(0, Math.min(255, r + brightness));
+                    g = Math.max(0, Math.min(255, g + brightness));
+                    b = Math.max(0, Math.min(255, b + brightness));
+                }
+                
+                // Contrast
+                if (contrast !== 0) {
+                    r = Math.max(0, Math.min(255, contrastFactor * (r - 128) + 128));
+                    g = Math.max(0, Math.min(255, contrastFactor * (g - 128) + 128));
+                    b = Math.max(0, Math.min(255, contrastFactor * (b - 128) + 128));
+                }
+                
+                // Saturation
+                if (saturation !== 0) {
+                    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                    const satFactor = 1 + saturation / 100;
+                    r = Math.max(0, Math.min(255, gray + (r - gray) * satFactor));
+                    g = Math.max(0, Math.min(255, gray + (g - gray) * satFactor));
+                    b = Math.max(0, Math.min(255, gray + (b - gray) * satFactor));
+                }
+                
+                // Monochrome (before invert/sharpen)
+                if (filters.mono) {
+                    const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                    r = g = b = gray;
+                }
+                
+                // Invert
+                if (filters.invert) {
+                    r = 255 - r;
+                    g = 255 - g;
+                    b = 255 - b;
+                }
+                
+                output[i] = r;
+                output[i + 1] = g;
+                output[i + 2] = b;
+                output[i + 3] = data[i + 3]; // alpha
+            }
+            
+            // Sharpen (convolution)
+            if (filters.sharpen || filters.edge) {
+                const kernel = filters.edge 
+                    ? [-1, -1, -1, -1, 8, -1, -1, -1, -1] // Edge detection
+                    : [0, -1, 0, -1, 5, -1, 0, -1, 0];    // Sharpen
+                
+                const tempData = new Uint8ClampedArray(output);
+                
+                for (let y = 1; y < height - 1; y++) {
+                    for (let x = 1; x < width - 1; x++) {
+                        for (let c = 0; c < 3; c++) {
+                            let sum = 0;
+                            for (let ky = -1; ky <= 1; ky++) {
+                                for (let kx = -1; kx <= 1; kx++) {
+                                    const idx = ((y + ky) * width + (x + kx)) * 4 + c;
+                                    const kidx = (ky + 1) * 3 + (kx + 1);
+                                    sum += tempData[idx] * kernel[kidx];
+                                }
+                            }
+                            const idx = (y * width + x) * 4 + c;
+                            output[idx] = Math.max(0, Math.min(255, sum));
+                        }
+                    }
+                }
+            }
+            
+            // Solder mode - enhance highlights for shiny metal
+            if (filters.solder) {
+                for (let i = 0; i < data.length; i += 4) {
+                    let r = output[i];
+                    let g = output[i + 1];
+                    let b = output[i + 2];
+                    
+                    // Convert to perceived brightness
+                    const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+                    
+                    // Enhance bright areas (solder joints are reflective)
+                    if (brightness > 150) {
+                        const boost = (brightness - 150) / 105 * 50;
+                        r = Math.min(255, r + boost);
+                        g = Math.min(255, g + boost);
+                        b = Math.min(255, b + boost);
+                    }
+                    
+                    // Slight blue tint for better contrast on copper
+                    b = Math.min(255, b * 1.1);
+                    
+                    output[i] = r;
+                    output[i + 1] = g;
+                    output[i + 2] = b;
+                }
+            }
+            
+            return new ImageData(output, width, height);
+        }
+
+        function renderLoop() {
+            if (video.readyState >= 2) {
+                // Draw to processing canvas
+                procCtx.drawImage(video, 0, 0);
+                
+                // Get image data
+                let imageData = procCtx.getImageData(0, 0, procCanvas.width, procCanvas.height);
+                
+                // Apply filters if any are active
+                const anyFilter = filters.sharpen || filters.edge || filters.invert || 
+                                 filters.solder || filters.mono || filters.contrast !== 0 || 
+                                 filters.brightness !== 0 || filters.saturation !== 0;
+                
+                if (anyFilter) {
+                    imageData = applyFilters(imageData);
+                }
+                
+                // Put processed data to canvas
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                ctx.save();
+                ctx.translate(offsetX, offsetY);
+                ctx.scale(scale, scale);
+                
+                // Create temp canvas for filtered image
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = imageData.width;
+                tempCanvas.height = imageData.height;
+                tempCanvas.getContext('2d').putImageData(imageData, 0, 0);
+                
+                ctx.drawImage(tempCanvas, 0, 0);
+                ctx.restore();
+            }
+            
+            animationId = requestAnimationFrame(renderLoop);
+        }
+
+        function toggleFilter(name) {
+            filters[name] = !filters[name];
+            document.getElementById('btn' + name.charAt(0).toUpperCase() + name.slice(1))
+                .classList.toggle('active', filters[name]);
+            
+            // Solder mode disables other enhancements
+            if (name === 'solder' && filters.solder) {
+                filters.sharpen = false;
+                document.getElementById('btnSharpen').classList.remove('active');
+            }
+        }
+
+        function updateFilter(type, value) {
+            filters[type] = parseInt(value);
+            document.getElementById(type + 'Val').textContent = value;
+        }
+
+        // Mouse wheel zoom
+        container.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? -0.1 : 0.1;
+            adjustZoom(delta);
+        }, { passive: false });
+
+        function adjustZoom(delta) {
+            const newScale = Math.max(0.5, Math.min(5, scale + delta));
+            scale = newScale;
+            zoomLevelEl.textContent = scale.toFixed(1) + 'x';
+        }
+
+        function resetView() {
+            scale = 1;
+            offsetX = 0;
+            offsetY = 0;
+            zoomLevelEl.textContent = '1.0x';
+            
+            // Reset filters too
+            filters = { sharpen: false, edge: false, invert: false, solder: false, mono: false, contrast: 0, brightness: 0, saturation: 0 };
+            document.querySelectorAll('.filter-controls button').forEach(btn => btn.classList.remove('active'));
+            document.getElementById('contrastSlider').value = 0;
+            document.getElementById('contrastVal').textContent = '0';
+            document.getElementById('brightnessSlider').value = 0;
+            document.getElementById('brightnessVal').textContent = '0';
+            document.getElementById('saturationSlider').value = 0;
+            document.getElementById('saturationVal').textContent = '0';
+        }
+
+        // Pan with drag
+        container.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            container.style.cursor = 'grabbing';
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            
+            offsetX += dx;
+            offsetY += dy;
+            
+            lastX = e.clientX;
+            lastY = e.clientY;
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+            container.style.cursor = 'grab';
+        });
+
+        // Keyboard shortcuts
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                takeSnapshot();
+            }
+            if (e.code === 'KeyR') {
+                resetView();
+            }
+            if (e.code === 'Digit1') toggleFilter('sharpen');
+            if (e.code === 'Digit2') toggleFilter('edge');
+            if (e.code === 'Digit3') toggleFilter('invert');
+            if (e.code === 'Digit4') toggleFilter('solder');
+            if (e.code === 'Digit5') toggleFilter('mono');
+        });
+
+        function takeSnapshot() {
+            // Create high-res snapshot with current filters
+            const snapCanvas = document.createElement('canvas');
+            snapCanvas.width = video.videoWidth;
+            snapCanvas.height = video.videoHeight;
+            const snapCtx = snapCanvas.getContext('2d');
+            
+            // Apply same processing
+            procCtx.drawImage(video, 0, 0);
+            let imageData = procCtx.getImageData(0, 0, procCanvas.width, procCanvas.height);
+            
+            const anyFilter = filters.sharpen || filters.edge || filters.invert || 
+                             filters.solder || filters.mono || filters.contrast !== 0 || 
+                             filters.brightness !== 0 || filters.saturation !== 0;
+            
+            if (anyFilter) {
+                imageData = applyFilters(imageData);
+            }
+            
+            snapCtx.putImageData(imageData, 0, 0);
+            
+            const dataUrl = snapCanvas.toDataURL('image/jpeg', 0.95);
+            const timestamp = new Date().toLocaleTimeString();
+            
+            snapshots.unshift({ dataUrl, timestamp });
+            updateSnapshotList();
+            
+            // Auto-download
+            const link = document.createElement('a');
+            link.download = `microscope_${Date.now()}.jpg`;
+            link.href = dataUrl;
+            link.click();
+            
+            statusEl.textContent = `Snapshot saved!`;
+            setTimeout(() => statusEl.textContent = 'Live', 2000);
+        }
+
+        function updateSnapshotList() {
+            const list = document.getElementById('snapshotList');
+            list.innerHTML = snapshots.map((snap, i) => `
+                <div class="snapshot-item" onclick="viewSnapshot(${i})">
+                    <img src="${snap.dataUrl}" alt="Snapshot">
+                    <div class="time">${snap.timestamp}</div>
+                </div>
+            `).join('');
+        }
+
+        function viewSnapshot(index) {
+            const snap = snapshots[index];
+            window.open(snap.dataUrl, '_blank');
+        }
+
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('hidden');
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+            }
+        });
+    </script>
+</body>
+</html>
