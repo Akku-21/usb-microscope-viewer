@@ -40,6 +40,15 @@
             background: #555;
         }
         .toolbar button.secondary:hover { background: #666; }
+        .toolbar button.warning {
+            background: #ff6b35;
+            animation: pulse 1.5s infinite;
+        }
+        .toolbar button.warning:hover { background: #e55a2b; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
         .toolbar button.active {
             background: #4a9eff;
             box-shadow: 0 0 0 2px #4a9eff;
@@ -48,6 +57,14 @@
             margin-left: auto;
             color: #aaa;
             font-size: 12px;
+        }
+        .toolbar .info.frozen {
+            color: #ff6b35;
+            font-weight: bold;
+        }
+        .toolbar .info.reconnecting {
+            color: #ffd93d;
+            font-weight: bold;
         }
         .zoom-controls {
             display: flex;
@@ -122,10 +139,34 @@
             cursor: grab;
             overflow: hidden;
         }
+        .video-container.frozen {
+            border: 3px solid #ff6b35;
+        }
+        .video-container.reconnecting {
+            border: 3px solid #ffd93d;
+        }
         .video-container:active { cursor: grabbing; }
         .video-container canvas {
             max-width: 100%;
             max-height: 100%;
+            display: block;
+        }
+        .freeze-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 107, 53, 0.9);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: bold;
+            z-index: 100;
+            display: none;
+            pointer-events: none;
+        }
+        .freeze-overlay.show {
             display: block;
         }
         .sidebar {
@@ -216,6 +257,7 @@
 
     <div class="toolbar">
         <button onclick="takeSnapshot()">📷 Snapshot</button>
+        <button id="reconnectBtn" class="secondary hidden" onclick="manualReconnect()">🔄 Reconnect</button>
         <div class="zoom-controls">
             <button class="secondary" onclick="adjustZoom(-0.5)">−</button>
             <span class="zoom-level" id="zoomLevel">1.0x</span>
@@ -223,7 +265,7 @@
             <button class="secondary" onclick="resetView()">Reset</button>
         </div>
         <button class="secondary" onclick="toggleSidebar()">📁 Snapshots</button>
-        <div class="info">
+        <div class="info" id="statusInfo">
             <span id="resolution">-</span> | 
             <span id="status">Ready</span>
         </div>
@@ -258,6 +300,7 @@
     <div class="main-container">
         <div class="video-container" id="videoContainer">
             <canvas id="videoCanvas"></canvas>
+            <div class="freeze-overlay" id="freezeOverlay">⚠️ CAMERA FROZEN - RECONNECTING...</div>
         </div>
         
         <div class="sidebar hidden" id="sidebar">
@@ -277,6 +320,9 @@
         const zoomLevelEl = document.getElementById('zoomLevel');
         const resolutionEl = document.getElementById('resolution');
         const statusEl = document.getElementById('status');
+        const statusInfo = document.getElementById('statusInfo');
+        const freezeOverlay = document.getElementById('freezeOverlay');
+        const reconnectBtn = document.getElementById('reconnectBtn');
         
         let video = document.createElement('video');
         let stream = null;
@@ -307,20 +353,161 @@
         let procCanvas = document.createElement('canvas');
         let procCtx = procCanvas.getContext('2d');
 
-        async function startCamera() {
+        // FREEZE DETECTION STATE
+        let isFrozen = false;
+        let isReconnecting = false;
+        let lastFrameTime = Date.now();
+        let frameCallbackId = null;
+        let watchdogTimer = null;
+        let reconnectAttempts = 0;
+        let savedDeviceId = null;
+        const FREEZE_THRESHOLD_MS = 1500; // Time without new frame = frozen
+        const WATCHDOG_INTERVAL_MS = 500; // Check every 500ms
+        const MAX_RECONNECT_ATTEMPTS = 5;
+
+        // Frame monitoring with requestVideoFrameCallback (Chrome/Edge)
+        function setupFrameCallback() {
+            if (!video.requestVideoFrameCallback) return;
+            
+            function onFrame(now, metadata) {
+                if (!isReconnecting) {
+                    lastFrameTime = Date.now();
+                    if (isFrozen) {
+                        // Frame resumed - unfreeze
+                        setFrozen(false);
+                    }
+                }
+                frameCallbackId = video.requestVideoFrameCallback(onFrame);
+            }
+            frameCallbackId = video.requestVideoFrameCallback(onFrame);
+        }
+
+        function cancelFrameCallback() {
+            if (frameCallbackId && video.cancelVideoFrameCallback) {
+                video.cancelVideoFrameCallback(frameCallbackId);
+                frameCallbackId = null;
+            }
+        }
+
+        // Watchdog timer for freeze detection (fallback for all browsers)
+        function startWatchdog() {
+            stopWatchdog();
+            watchdogTimer = setInterval(() => {
+                if (isReconnecting) return;
+                
+                const timeSinceLastFrame = Date.now() - lastFrameTime;
+                if (timeSinceLastFrame > FREEZE_THRESHOLD_MS && !isFrozen) {
+                    console.log('Freeze detected! Time since last frame:', timeSinceLastFrame);
+                    setFrozen(true);
+                    autoReconnect();
+                }
+            }, WATCHDOG_INTERVAL_MS);
+        }
+
+        function stopWatchdog() {
+            if (watchdogTimer) {
+                clearInterval(watchdogTimer);
+                watchdogTimer = null;
+            }
+        }
+
+        function setFrozen(frozen) {
+            isFrozen = frozen;
+            if (frozen) {
+                container.classList.add('frozen');
+                freezeOverlay.classList.add('show');
+                statusEl.textContent = 'FROZEN';
+                statusInfo.classList.add('frozen');
+                reconnectBtn.classList.remove('hidden');
+            } else {
+                container.classList.remove('frozen');
+                container.classList.remove('reconnecting');
+                freezeOverlay.classList.remove('show');
+                statusEl.textContent = 'Live';
+                statusInfo.classList.remove('frozen');
+                statusInfo.classList.remove('reconnecting');
+                reconnectBtn.classList.add('hidden');
+                reconnectAttempts = 0;
+            }
+        }
+
+        function setReconnecting(reconnecting) {
+            isReconnecting = reconnecting;
+            if (reconnecting) {
+                container.classList.add('reconnecting');
+                freezeOverlay.textContent = `⚠️ RECONNECTING... (Attempt ${reconnectAttempts + 1})`;
+                freezeOverlay.classList.add('show');
+                statusEl.textContent = 'Reconnecting...';
+                statusInfo.classList.add('reconnecting');
+            } else {
+                container.classList.remove('reconnecting');
+                freezeOverlay.textContent = '⚠️ CAMERA FROZEN - RECONNECTING...';
+            }
+        }
+
+        async function autoReconnect() {
+            if (isReconnecting) return;
+            
+            reconnectAttempts++;
+            if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+                statusEl.textContent = 'Reconnect failed - Click Reconnect button';
+                reconnectBtn.classList.remove('hidden');
+                reconnectBtn.classList.add('warning');
+                return;
+            }
+
+            setReconnecting(true);
+            
+            // Stop current stream
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            cancelFrameCallback();
+            
+            // Wait a moment for USB to settle
+            await new Promise(r => setTimeout(r, 1000));
+            
             try {
-                statusEl.textContent = 'Starting...';
+                // Try to restart camera
+                await startCameraInternal();
+                setFrozen(false);
+                setReconnecting(false);
+                console.log('Reconnection successful!');
+            } catch (err) {
+                console.error('Reconnection failed:', err);
+                setReconnecting(false);
+                // Will try again via watchdog if still frozen
+            }
+        }
+
+        async function manualReconnect() {
+            reconnectAttempts = 0;
+            reconnectBtn.classList.remove('warning');
+            await autoReconnect();
+        }
+
+        async function startCamera() {
+            await startCameraInternal();
+            document.getElementById('startScreen').classList.add('hidden');
+        }
+
+        async function startCameraInternal() {
+            try {
+                statusEl.textContent = reconnectAttempts > 0 ? 'Reconnecting...' : 'Starting...';
                 
                 // Request camera with specific constraints for microscope
                 const devices = await navigator.mediaDevices.enumerateDevices();
                 const videoDevices = devices.filter(d => d.kind === 'videoinput');
                 
                 // Try to find the microscope (non-default camera)
-                let deviceId = undefined;
-                if (videoDevices.length > 1) {
+                let deviceId = savedDeviceId;
+                if (!deviceId && videoDevices.length > 1) {
                     // Usually the microscope is the last device
                     deviceId = videoDevices[videoDevices.length - 1].deviceId;
                 }
+                
+                // Save for reconnection attempts
+                savedDeviceId = deviceId;
                 
                 stream = await navigator.mediaDevices.getUserMedia({
                     video: {
@@ -334,7 +521,26 @@
                 video.autoplay = true;
                 video.playsInline = true;
                 
-                await new Promise((resolve) => {
+                // Set up track event listeners for freeze detection
+                const videoTrack = stream.getVideoTracks()[0];
+                if (videoTrack) {
+                    videoTrack.onmute = () => {
+                        console.log('Video track muted (frozen)');
+                        setFrozen(true);
+                        autoReconnect();
+                    };
+                    videoTrack.onunmute = () => {
+                        console.log('Video track unmuted (resumed)');
+                        setFrozen(false);
+                    };
+                    videoTrack.onended = () => {
+                        console.log('Video track ended');
+                        setFrozen(true);
+                        autoReconnect();
+                    };
+                }
+                
+                await new Promise((resolve, reject) => {
                     video.onloadedmetadata = () => {
                         canvas.width = video.videoWidth;
                         canvas.height = video.videoHeight;
@@ -343,16 +549,27 @@
                         resolutionEl.textContent = `${video.videoWidth}x${video.videoHeight}`;
                         resolve();
                     };
+                    video.onerror = reject;
+                    // Timeout fallback
+                    setTimeout(() => reject(new Error('Video load timeout')), 10000);
                 });
                 
-                document.getElementById('startScreen').classList.add('hidden');
                 statusEl.textContent = 'Live';
+                lastFrameTime = Date.now();
                 
-                renderLoop();
+                // Start frame monitoring
+                setupFrameCallback();
+                startWatchdog();
+                
+                // Start render loop if not already running
+                if (!animationId) {
+                    renderLoop();
+                }
                 
             } catch (err) {
-                alert('Could not start camera: ' + err.message);
-                statusEl.textContent = 'Error';
+                console.error('Camera error:', err);
+                statusEl.textContent = 'Error: ' + err.message;
+                throw err;
             }
         }
 
@@ -475,7 +692,7 @@
         }
 
         function renderLoop() {
-            if (video.readyState >= 2) {
+            if (video.readyState >= 2 && !isFrozen) {
                 // Draw to processing canvas
                 procCtx.drawImage(video, 0, 0);
                 
@@ -602,6 +819,11 @@
         });
 
         function takeSnapshot() {
+            if (isFrozen) {
+                alert('Camera is frozen - please reconnect first');
+                return;
+            }
+            
             // Create high-res snapshot with current filters
             const snapCanvas = document.createElement('canvas');
             snapCanvas.width = video.videoWidth;
@@ -635,7 +857,7 @@
             link.click();
             
             statusEl.textContent = `Snapshot saved!`;
-            setTimeout(() => statusEl.textContent = 'Live', 2000);
+            setTimeout(() => statusEl.textContent = isFrozen ? 'FROZEN' : 'Live', 2000);
         }
 
         function updateSnapshotList() {
@@ -659,6 +881,8 @@
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
+            stopWatchdog();
+            cancelFrameCallback();
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
             }
